@@ -1,0 +1,6 @@
+kind: Fixes
+body: Pass timeout to get query job result
+time: 2024-02-01T09:23:34.559198+09:00
+custom:
+  Author: yu-iskw
+  Issue: "1081"
