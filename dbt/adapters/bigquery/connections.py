@@ -4,44 +4,39 @@ import json
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-
-from dbt.events.contextvars import get_node_info
-from mashumaro.helper import pass_through
-
 from functools import lru_cache
-import agate
-from requests.exceptions import ConnectionError
-from typing import Optional, Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
+import agate
 import google.auth
 import google.auth.exceptions
 import google.cloud.bigquery
 import google.cloud.exceptions
-from google.api_core import retry, client_info
+from google.api_core import client_info, retry
 from google.auth import impersonated_credentials
-from google.oauth2 import (
-    credentials as GoogleCredentials,
-    service_account as GoogleServiceAccountCredentials,
-)
+from google.oauth2 import credentials as GoogleCredentials
+from google.oauth2 import service_account as GoogleServiceAccountCredentials
+from mashumaro.helper import pass_through
+from requests.exceptions import ConnectionError
 
+from dbt.adapters.base import BaseConnectionManager, Credentials
 from dbt.adapters.bigquery import gcloud
 from dbt.clients import agate_helper
 from dbt.config.profile import INVALID_PROFILE_MESSAGE
-from dbt.tracking import active_user
-from dbt.contracts.connection import ConnectionState, AdapterResponse
-from dbt.exceptions import (
-    FailedToConnectError,
-    DbtRuntimeError,
-    DbtDatabaseError,
-    DbtProfileError,
-)
-from dbt.adapters.base import BaseConnectionManager, Credentials
+from dbt.contracts.connection import AdapterResponse, ConnectionState
+from dbt.dataclass_schema import ExtensibleDbtClassMixin, StrEnum
 from dbt.events import AdapterLogger
+from dbt.events.contextvars import get_node_info
 from dbt.events.functions import fire_event
 from dbt.events.types import SQLQuery
+from dbt.exceptions import (
+    DbtDatabaseError,
+    DbtProfileError,
+    DbtRuntimeError,
+    FailedToConnectError,
+)
+from dbt.tracking import active_user
 from dbt.version import __version__ as dbt_version
-
-from dbt.dataclass_schema import ExtensibleDbtClassMixin, StrEnum
 
 logger = AdapterLogger("BigQuery")
 
@@ -235,7 +230,9 @@ class BigQueryConnectionManager(BaseConnectionManager):
         if hasattr(error, "query_job"):
             logger.error(
                 cls._bq_job_link(
-                    error.query_job.location, error.query_job.project, error.query_job.job_id
+                    error.query_job.location,
+                    error.query_job.project,
+                    error.query_job.job_id,
                 )
             )
         raise DbtDatabaseError(error_msg)
@@ -330,11 +327,15 @@ class BigQueryConnectionManager(BaseConnectionManager):
 
         elif method == BigQueryConnectionMethod.SERVICE_ACCOUNT:
             keyfile = profile_credentials.keyfile
-            return creds.from_service_account_file(keyfile, scopes=profile_credentials.scopes)
+            return creds.from_service_account_file(
+                keyfile, scopes=profile_credentials.scopes
+            )
 
         elif method == BigQueryConnectionMethod.SERVICE_ACCOUNT_JSON:
             details = profile_credentials.keyfile_json
-            return creds.from_service_account_info(details, scopes=profile_credentials.scopes)
+            return creds.from_service_account_info(
+                details, scopes=profile_credentials.scopes
+            )
 
         elif method == BigQueryConnectionMethod.OAUTH_SECRETS:
             return GoogleCredentials.Credentials(
@@ -397,7 +398,8 @@ class BigQueryConnectionManager(BaseConnectionManager):
 
         except Exception as e:
             logger.debug(
-                "Got an error when attempting to create a bigquery " "client: '{}'".format(e)
+                "Got an error when attempting to create a bigquery "
+                "client: '{}'".format(e)
             )
 
             connection.handle = None
@@ -614,7 +616,9 @@ class BigQueryConnectionManager(BaseConnectionManager):
         def standard_to_legacy(table):
             return table.project + ":" + table.dataset + "." + table.identifier
 
-        legacy_sql = "SELECT * FROM [" + standard_to_legacy(table) + "$__PARTITIONS_SUMMARY__]"
+        legacy_sql = (
+            "SELECT * FROM [" + standard_to_legacy(table) + "$__PARTITIONS_SUMMARY__]"
+        )
 
         sql = self._add_query_comment(legacy_sql)
         # auto_begin is ignored on bigquery, and only included for consistency
@@ -652,8 +656,12 @@ class BigQueryConnectionManager(BaseConnectionManager):
         )
 
         def copy_and_results():
-            job_config = google.cloud.bigquery.CopyJobConfig(write_disposition=write_disposition)
-            copy_job = client.copy_table(source_ref_array, destination_ref, job_config=job_config)
+            job_config = google.cloud.bigquery.CopyJobConfig(
+                write_disposition=write_disposition
+            )
+            copy_job = client.copy_table(
+                source_ref_array, destination_ref, job_config=job_config
+            )
             timeout = self.get_job_execution_timeout_seconds(conn) or 300
             iterator = copy_job.result(timeout=timeout)
             return copy_job, iterator
@@ -669,7 +677,9 @@ class BigQueryConnectionManager(BaseConnectionManager):
 
     @staticmethod
     def dataset_ref(database, schema):
-        return google.cloud.bigquery.DatasetReference(project=database, dataset_id=schema)
+        return google.cloud.bigquery.DatasetReference(
+            project=database, dataset_id=schema
+        )
 
     @staticmethod
     def table_ref(database, schema, table_name):
@@ -691,7 +701,9 @@ class BigQueryConnectionManager(BaseConnectionManager):
         client = conn.handle
 
         def fn():
-            return client.delete_dataset(dataset_ref, delete_contents=True, not_found_ok=True)
+            return client.delete_dataset(
+                dataset_ref, delete_contents=True, not_found_ok=True
+            )
 
         self._retry_and_handle(msg="drop dataset", conn=conn, fn=fn)
 
@@ -731,35 +743,46 @@ class BigQueryConnectionManager(BaseConnectionManager):
         """Query the client and wait for results."""
         # Cannot reuse job_config if destination is set and ddl is used
         job_config = google.cloud.bigquery.QueryJobConfig(**job_params)
-        query_job = client.query(query=sql, job_config=job_config, timeout=job_creation_timeout)
+        query_job = client.query(
+            query=sql, job_config=job_config, timeout=job_creation_timeout
+        )
         if (
             query_job.location is not None
             and query_job.job_id is not None
             and query_job.project is not None
         ):
             logger.debug(
-                self._bq_job_link(query_job.location, query_job.project, query_job.job_id)
+                self._bq_job_link(
+                    query_job.location, query_job.project, query_job.job_id
+                )
             )
 
         # only use async logic if user specifies a timeout
         if job_execution_timeout:
             loop = asyncio.new_event_loop()
             future_iterator = asyncio.wait_for(
-                loop.run_in_executor(None, functools.partial(query_job.result, max_results=limit)),
+                loop.run_in_executor(
+                    None,
+                    functools.partial(
+                        query_job.result,
+                        max_results=limit,
+                        timeout=job_execution_timeout,
+                    ),
+                ),
                 timeout=job_execution_timeout,
             )
 
             try:
                 iterator = loop.run_until_complete(future_iterator)
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as e:
                 query_job.cancel()
                 raise DbtRuntimeError(
-                    f"Query exceeded configured timeout of {job_execution_timeout}s"
+                    f"Query exceeded configured timeout of {job_execution_timeout}s with error: {e}"
                 )
             finally:
                 loop.close()
         else:
-            iterator = query_job.result(max_results=limit)
+            iterator = query_job.result(max_results=limit, timeout=60 * 60 * 24)
         return query_job, iterator
 
     def _retry_and_handle(self, msg, conn, fn):
